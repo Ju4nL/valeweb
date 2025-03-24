@@ -21,7 +21,6 @@ const pool = new pg.Pool({
   },
 });
 
-
 // Middleware para verificar token
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -84,32 +83,60 @@ app.put('/users/:id/make-scrum', authenticateToken, async (req, res) => {
 // Crear vales (scrum asigna)
 app.post('/vales', authenticateToken, async (req, res) => {
   if (req.user.role !== 'scrum') return res.sendStatus(403);
-  const { description, assigned_to, expires_at } = req.body;
-  await pool.query(
-    'INSERT INTO vales (description, assigned_to, assigned_by, expires_at) VALUES ($1, $2, $3, $4)',
-    [description, assigned_to, req.user.id, expires_at]
-  );
-  res.sendStatus(201);
+  const { description, assigned_to, expires_at, canjeadores } = req.body;
+
+  try {
+    const result = await pool.query(
+      'INSERT INTO vales (description, assigned_to, assigned_by, expires_at) VALUES ($1, $2, $3, $4) RETURNING id',
+      [description, assigned_to, req.user.id, expires_at]
+    );
+
+    const valeId = result.rows[0].id;
+
+    for (const to_user of canjeadores) {
+      await pool.query(
+        'INSERT INTO vale_canjeo (vale_id, from_user, to_user, accepted) VALUES ($1, $2, $3, $4)',
+        [valeId, assigned_to, to_user, null] // null = aún no se ha enviado
+      );
+    }
+
+    res.sendStatus(201);
+  } catch (err) {
+    console.error("Error creando vale:", err.message);
+    res.sendStatus(500);
+  }
 });
 
-// Ver vales asignados a mí
+// Mostrar vales asignados a mí que aún no han sido enviados
 app.get('/vales', authenticateToken, async (req, res) => {
   const result = await pool.query(
-    'SELECT * FROM vales WHERE assigned_to = $1 AND expires_at > NOW()',
+    `SELECT vc.id AS canjeo_id, v.id AS vale_id, v.description, v.expires_at,
+            u.name AS to_user_name, vc.accepted
+     FROM vales v
+     JOIN vale_canjeo vc ON vc.vale_id = v.id
+     JOIN users u ON vc.to_user = u.id
+     WHERE v.assigned_to = $1
+       AND v.expires_at > NOW()
+       AND (vc.accepted IS NULL OR vc.accepted = FALSE)`,
     [req.user.id]
   );
   res.json(result.rows);
 });
 
-// Canjear vale
-app.post('/vales/:id/canjear', authenticateToken, async (req, res) => {
-  const { to_user } = req.body;
-  const vale_id = req.params.id;
-  await pool.query(
-    'INSERT INTO vale_canjeo (vale_id, from_user, to_user) VALUES ($1, $2, $3)',
-    [vale_id, req.user.id, to_user]
-  );
-  res.sendStatus(201);
+
+// Enviar vale para que el receptor pueda aceptarlo (cambia null -> FALSE)
+app.put('/vale_canjeo/:id/enviar', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query(
+      'UPDATE vale_canjeo SET accepted = FALSE WHERE id = $1 AND from_user = $2 AND accepted IS NULL',
+      [id, req.user.id]
+    );
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("Error enviando vale:", err.message);
+    res.sendStatus(500);
+  }
 });
 
 // Aceptar vale
@@ -120,6 +147,18 @@ app.put('/vale_canjeo/:id/aceptar', authenticateToken, async (req, res) => {
     [id, req.user.id]
   );
   res.sendStatus(200);
+});
+
+// Ver vales que me canjearon y aún no he aceptado (solo los enviados)
+app.get('/vale_canjeo/pendientes', authenticateToken, async (req, res) => {
+  const result = await pool.query(
+    'SELECT vc.id, v.description, u.name AS from_user, vc.accepted FROM vale_canjeo vc ' +
+    'JOIN vales v ON vc.vale_id = v.id ' +
+    'JOIN users u ON vc.from_user = u.id ' +
+    'WHERE vc.to_user = $1 AND vc.accepted = FALSE',
+    [req.user.id]
+  );
+  res.json(result.rows);
 });
 
 app.listen(PORT, () => {
