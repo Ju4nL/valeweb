@@ -11,7 +11,35 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const SECRET = process.env.JWT_SECRET;
 
-app.use(cors());
+
+
+const allowedOrigins = process.env.FRONTEND_URLS?.split(',') || [];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("No permitido por CORS"));
+    }
+  },
+  credentials: true,
+}));
+
+app.options('*', cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("No permitido por CORS"));
+    }
+  },
+  credentials: true,
+}));
+
+
+
+
 app.use(bodyParser.json());
 
 const pool = new pg.Pool({
